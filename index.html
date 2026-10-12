@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transformer Training 10 — Data Parallelism, All-Reduce and ZeRO</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=Manrope:wght@300;400;500;600;700&family=Source+Code+Pro:ital,wght@0,400;0,500;0,600;0,700;1,400;1,700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0f2027;
+            --bg-card: #13272f;
+            --bg-code: #182f38;
+            --text-primary: #ede7dd;
+            --text-secondary: #8ca5a9;
+            --accent: #83c395;
+            --accent-dim: #83c39544;
+            --accent-glow: #83c39533;
+            --border: #23404a;
+            --font-display: 'Sora', sans-serif;
+            --font-mono: 'Source Code Pro', 'Source Code Pro', monospace;
+            --font-body: 'Manrope', sans-serif;
+            --max-width: 900px;
+        }
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        html { scroll-behavior: smooth; }
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: var(--font-body);
+            font-size: 17px;
+            line-height: 1.7;
+            overflow-x: hidden;
+        }
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 2rem 1.5rem;
+            text-align: center;
+            position: relative;
+        }
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 600px;
+            height: 600px;
+            background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+            pointer-events: none;
+            z-index: 0;
+        }
+        .hero > * { position: relative; z-index: 1; }
+        .series-label {
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            color: var(--accent);
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            margin-bottom: 1rem;
+        }
+        .hero h1 {
+            font-family: var(--font-display);
+            font-size: clamp(2rem, 5vw, 3.2rem);
+            font-weight: 700;
+            color: var(--text-primary);
+            line-height: 1.2;
+            margin-bottom: 1rem;
+        }
+        .hero h1 .accent { color: var(--accent); }
+        .hero .subtitle {
+            font-size: 1.1rem;
+            color: var(--text-secondary);
+            max-width: 640px;
+            margin-bottom: 2rem;
+        }
+        .tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            justify-content: center;
+            margin-bottom: 2.5rem;
+        }
+        .tag {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: 999px;
+            border: 1px solid var(--accent);
+            color: var(--accent);
+            background: var(--accent-dim);
+            white-space: nowrap;
+        }
+        .pipeline {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: center;
+            gap: 0.25rem;
+            margin-bottom: 1rem;
+            max-width: var(--max-width);
+        }
+        .pipeline-step {
+            font-family: var(--font-mono);
+            font-size: 0.7rem;
+            padding: 0.3rem 0.7rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+        .pipeline-arrow { color: var(--accent); font-size: 0.9rem; font-weight: 700; }
+        .slide {
+            min-height: 100vh;
+            max-width: var(--max-width);
+            margin: 0 auto;
+            padding: 4rem 1.5rem;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+        .slide-number {
+            font-family: var(--font-display);
+            font-size: 5rem;
+            font-weight: 700;
+            color: var(--accent-dim);
+            position: absolute;
+            top: 2rem;
+            right: 1.5rem;
+            line-height: 1;
+            user-select: none;
+        }
+        .slide h2 {
+            font-family: var(--font-display);
+            font-size: 1.9rem;
+            font-weight: 700;
+            color: var(--accent);
+            margin-bottom: 1.5rem;
+            line-height: 1.25;
+        }
+        .slide h3 {
+            font-family: var(--font-display);
+            font-size: 1.3rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-top: 1.5rem;
+            margin-bottom: 0.75rem;
+        }
+        .slide p { margin-bottom: 1rem; color: var(--text-secondary); }
+        .slide p strong { color: var(--text-primary); }
+        .slide ul, .slide ol { margin-bottom: 1rem; padding-left: 1.5rem; color: var(--text-secondary); }
+        .slide li { margin-bottom: 0.4rem; }
+        .slide li strong { color: var(--text-primary); }
+        .slide code {
+            font-family: var(--font-mono);
+            font-size: 0.88em;
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            padding: 0.05rem 0.35rem;
+            border-radius: 3px;
+            color: #cfd7d1;
+        }
+        .code-block {
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin: 1.25rem 0;
+            overflow: hidden;
+        }
+        .code-header {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            color: var(--accent);
+            background: rgba(131,195,149,0.08);
+            padding: 0.4rem 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .code-block pre { margin: 0; padding: 1rem; overflow-x: auto; }
+        .code-block code {
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            line-height: 1.6;
+            color: #cfd7d1;
+            background: transparent;
+            border: none;
+            padding: 0;
+        }
+        .kw { color: #f48f70; }
+        .fn { color: #d4c0ea; }
+        .str { color: #c3dbea; }
+        .cm { color: #8ca5a9; font-style: italic; }
+        .num { color: #a8cee8; }
+        .type { color: #eac48b; }
+        .dir { color: #f48f70; }
+        .mac { color: #eac48b; }
+        .table-wrap {
+            overflow-x: auto;
+            margin: 1.25rem 0;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+        table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+        th {
+            background: var(--bg-code);
+            color: var(--accent);
+            font-weight: 600;
+            text-align: left;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--border);
+            font-family: var(--font-display);
+            white-space: nowrap;
+        }
+        td {
+            padding: 0.6rem 1rem;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+        }
+        tr:last-child td { border-bottom: none; }
+        tr:nth-child(even) td { background: rgba(19,39,47,0.5); }
+        .diagram-flow {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            margin: 1.5rem 0;
+            padding: 1.5rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .diagram-box {
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            padding: 0.5rem 1rem;
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-primary);
+            text-align: center;
+            white-space: nowrap;
+        }
+        .diagram-box.accent { border-color: var(--accent); color: var(--accent); background: rgba(131,195,149,0.08); }
+        .diagram-box.dim { color: var(--text-secondary); border-color: var(--border); }
+        .diagram-arrow { color: var(--accent); font-size: 1.3rem; font-weight: 700; }
+        .diagram-vertical {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.3rem;
+            margin: 1.5rem 0;
+            padding: 1.5rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .diagram-vertical .diagram-arrow { font-size: 1.1rem; }
+        .hierarchy {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+            margin: 1.5rem 0;
+            padding: 1.5rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .hierarchy-level { display: flex; align-items: center; gap: 0.75rem; }
+        .hierarchy-label {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            min-width: 80px;
+            text-align: right;
+        }
+        .hierarchy-items { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+        .hierarchy-item {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            padding: 0.3rem 0.6rem;
+            border-radius: 4px;
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+        }
+        .hierarchy-item.accent { border-color: var(--accent); color: var(--accent); background: rgba(131,195,149,0.08); }
+        .diagram-grid {
+            display: grid;
+            gap: 0.75rem;
+            margin: 1.5rem 0;
+            padding: 1.5rem;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .diagram-grid.cols-2 { grid-template-columns: 1fr 1fr; }
+        .diagram-grid.cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+        .diagram-panel {
+            padding: 1rem;
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+        }
+        .diagram-panel.accent-border { border-left: 3px solid var(--accent); }
+        .diagram-panel h4 {
+            font-family: var(--font-display);
+            font-size: 1rem;
+            color: var(--accent);
+            margin-bottom: 0.5rem;
+        }
+        .diagram-panel p, .diagram-panel ul { font-size: 0.85rem; }
+        .callout {
+            background: var(--bg-card);
+            border-left: 3px solid var(--accent);
+            border-radius: 0 8px 8px 0;
+            padding: 1rem 1.25rem;
+            margin: 1.25rem 0;
+        }
+        .callout p { margin-bottom: 0; }
+        .callout p + p { margin-top: 0.5rem; }
+        .callout .callout-label {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            color: var(--accent);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: 0.3rem;
+        }
+        .contents-list { list-style: none; padding-left: 0; counter-reset: contents; }
+        .contents-list li {
+            counter-increment: contents;
+            padding: 0.6rem 0;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+        .contents-list li:last-child { border-bottom: none; }
+        .contents-list li::before {
+            content: counter(contents, decimal-leading-zero);
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            color: var(--accent);
+            min-width: 2rem;
+        }
+        .contents-list a { color: var(--text-primary); text-decoration: none; transition: color 0.2s; }
+        .contents-list a:hover { color: var(--accent); }
+        .footer {
+            text-align: center;
+            padding: 3rem 1.5rem;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            border-top: 1px solid var(--border);
+            max-width: var(--max-width);
+            margin: 0 auto;
+        }
+        .footer a { color: var(--accent); text-decoration: none; }
+        .footer a:hover { text-decoration: underline; }
+        .canvas-wrap {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            margin: 1.25rem 0;
+            overflow-x: auto;
+        }
+        .canvas-wrap canvas, .canvas-wrap svg { display: block; margin: 0 auto; max-width: 100%; }
+        .badge {
+            display: inline-block;
+            font-family: var(--font-mono);
+            font-size: 0.65rem;
+            padding: 0.1rem 0.45rem;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            vertical-align: middle;
+            margin-left: 0.3rem;
+        }
+        .badge.ok    { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+        .badge.warn  { border-color: #eac48b; color: #eac48b; background: rgba(234,196,139,0.08); }
+        .badge.bad   { border-color: #f48f70; color: #f48f70; background: rgba(244,143,112,0.08); }
+        @media (max-width: 640px) {
+            .slide { padding: 3rem 1rem; min-height: auto; }
+            .slide-number { font-size: 3rem; top: 1.5rem; right: 1rem; }
+            .slide h2 { font-size: 1.5rem; }
+            .diagram-grid.cols-2, .diagram-grid.cols-3 { grid-template-columns: 1fr; }
+            .pipeline { gap: 0.15rem; }
+            .pipeline-step { font-size: 0.6rem; padding: 0.2rem 0.4rem; }
+            .hero h1 { font-size: 1.8rem; }
+            table { font-size: 0.78rem; }
+        }
+        .slide p a, .slide td a, .slide li a, .callout a { color: var(--accent); text-decoration: none; border-bottom: 1px dotted var(--accent); }
+        .slide p a:hover, .slide td a:hover, .slide li a:hover, .callout a:hover { border-bottom-style: solid; }
+        .hero { overflow: hidden; }
+        .diagram-panel { min-width: 0; }
+        .metric-label .katex, .callout-label .katex, .series-label .katex,
+        .metric-label .katex *, .callout-label .katex * { text-transform: none; }
+        .canvas-wrap canvas { image-rendering: auto; }
+        .katex-display { overflow-x: auto; overflow-y: hidden; padding: 0.25rem 0; }
+        @media (max-width: 640px) { .katex-display { font-size: 0.8em; } }
+        .chart-wrap { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem; margin: 1.25rem 0; }
+        .chart-wrap svg { display: block; width: 100%; height: auto; }
+        .chart-cap { font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.4rem; }
+        .live-link { font-family: var(--font-mono); font-size: 0.8rem; margin-top: 1rem; }
+        .widget { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin: 1.25rem 0; }
+        .widget .row { display: flex; flex-wrap: wrap; gap: 0.6rem 1rem; align-items: center; margin-bottom: 0.6rem; }
+        .widget label { font-family: var(--font-mono); font-size: 0.78rem; color: var(--text-secondary); display: flex; gap: 0.5rem; align-items: center; }
+        .widget input[type=range] { width: 160px; max-width: 100%; accent-color: var(--accent); }
+        .widget select { background: var(--bg-code); color: var(--text-primary); border: 1px solid var(--border); border-radius: 4px; padding: 0.25rem 0.4rem; font-family: var(--font-mono); font-size: 0.78rem; }
+        .widget button { background: var(--bg-code); color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0.35rem 0.8rem; font-family: var(--font-mono); font-size: 0.78rem; cursor: pointer; min-height: 36px; }
+        .widget button:hover { background: var(--accent-dim); }
+        .widget .out { font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-primary); }
+        .widget .cap { font-size: 0.82rem; color: var(--text-secondary); min-height: 2.6em; }
+        .widget svg { display: block; width: 100%; height: auto; }
+        .num-strong { color: var(--text-primary); font-weight: 600; }
+    /* deck-mobile-fix:hero */ .hero{overflow:hidden}@supports (overflow-x:clip){.hero{overflow:visible;overflow-x:clip}}
+    /* deck-mobile-fix:phone */ @media (max-width:640px){.diagram-box,.tier-fill,.section-divider>span,.action-btn{white-space:normal;overflow-wrap:anywhere}.diagram-grid>*,.diagram-panel,.diagram-box,.code-block,.callout,.metric,.control-group,.control-row>*,.pipeline-body,.roll-track>*,.tier-fill,.timeline-row>*{min-width:0;max-width:100%}p,li,a,code,td,th,.callout,.diagram-panel{overflow-wrap:break-word}pre{max-width:100%;overflow-x:auto}table{display:block;max-width:100%;overflow-x:auto}.katex-display,.bits,.canvas-wrap,.influence-map-wrapper,.timeline-track,div:has(>.bank-cell){max-width:100%;overflow-x:auto;overflow-y:hidden}select,input,img,video,iframe,.action-btn{max-width:100%}canvas{max-width:100%;height:auto}}
+            /* tt-charts */
+        .chart .plot-bg { fill: none; }
+        .chart .grid { stroke: var(--border); stroke-width: 1; }
+        .chart .axis { stroke: var(--text-secondary); stroke-width: 1; }
+        .chart .lbl { fill: var(--text-secondary); font-family: var(--font-mono); font-size: 12px; }
+        .chart .lbl.ax { fill: var(--text-primary); font-size: 12.5px; }
+        .chart .hline { stroke: var(--text-secondary); stroke-dasharray: 2 4; }
+        .chart .ln { fill: none; stroke-width: 2.2; }
+        .chart .eb { stroke-width: 1.4; }
+        .chart .legend-bg { fill: var(--bg-primary); stroke: var(--border); opacity: 0.92; }
+        .s1 { stroke: #56b4e9; fill: #56b4e9; } .s2 { stroke: #e69f00; fill: #e69f00; }
+        .s3 { stroke: #009e73; fill: #3fbf96; } .s4 { stroke: #cc79a7; fill: #cc79a7; }
+        .s5 { stroke: #f0e442; fill: #f0e442; } .s6 { stroke: #d55e00; fill: #d55e00; }
+        .s0 { stroke: var(--text-secondary); fill: var(--text-secondary); }
+        .ln { fill: none !important; }
+        .chart .bar { stroke: none; opacity: 0.85; }
+        .chart .lbl.inbar { fill: var(--bg-primary); font-weight: 600; }
+        @media (max-width: 640px) { .chart .lbl { font-size: 14px; } .chart .lbl.ax { font-size: 14px; } .wg-text, .wg-dim { font-size: 15px; } }
+        .wg-cell { fill: var(--bg-code); stroke: var(--border); }
+        .wg-text { fill: var(--text-primary); font-family: var(--font-mono); font-size: 13px; }
+        .wg-dim { fill: var(--text-secondary); font-family: var(--font-mono); font-size: 13px; }
+        .wg-hot { fill: #e69f00; } .wg-done { fill: #009e73; } .wg-cool { fill: #56b4e9; } .wg-idle { fill: var(--bg-code); stroke: var(--border); }
+        .wg-fwd { fill: #56b4e9; } .wg-bwd { fill: #e69f00; }
+    </style>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+        onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'\\(',right:'\\)',display:false}],throwOnError:false})"></script>
+</head>
+<body>
+<header class="hero">
+    <div class="series-label">Transformer Training &mdash; Presentation 10</div>
+    <h1>Data Parallelism, <span class="accent">All-Reduce and ZeRO</span></h1>
+    <p class="subtitle">Give every device the whole model and its own share of the batch, then make the copies agree. The ring all-reduce stepped through, the &alpha;&ndash;&beta; link model, all-gather and why its bytes grow, payload against wire bytes, ZeRO and FSDP, overlap and MFU.</p>
+
+    <div class="tags">
+        <span class="tag">Data parallelism</span>
+        <span class="tag">Ring all-reduce</span>
+        <span class="tag">Reduce-scatter</span>
+        <span class="tag">All-gather</span>
+        <span class="tag">&alpha;&ndash;&beta; model</span>
+        <span class="tag">ZeRO / FSDP</span>
+        <span class="tag">MFU</span>
+    </div>
+
+    <div class="pipeline">
+        <span class="pipeline-step">Shard batch</span>
+        <span class="pipeline-arrow">&rarr;</span>
+        <span class="pipeline-step">Backward</span>
+        <span class="pipeline-arrow">&rarr;</span>
+        <span class="pipeline-step">All-reduce</span>
+        <span class="pipeline-arrow">&rarr;</span>
+        <span class="pipeline-step">Same step</span>
+    </div>
+</header>
+
+<section class="slide" id="slide-00">
+    <div class="slide-number">00</div>
+    <h2>Topics We&rsquo;ll Cover</h2>
+    <ul class="contents-list">
+        <li><a href="#slide-01">Data Parallelism</a></li>
+        <li><a href="#slide-02">The Ring All-Reduce, Step by Step</a></li>
+        <li><a href="#slide-03">The &alpha;&ndash;&beta; Link Model</a></li>
+        <li><a href="#slide-04">Collective Times for LLaMA 7B</a></li>
+        <li><a href="#slide-05">All-Gather, and Why Its Bytes Grow</a></li>
+        <li><a href="#slide-06">Payload and Bytes on the Wire</a></li>
+        <li><a href="#slide-07">ZeRO and FSDP: Stop Every Worker Holding Everything</a></li>
+        <li><a href="#slide-08">Step Time = Compute + Communication, and Overlap</a></li>
+        <li><a href="#slide-09">MFU: Model FLOPs Utilisation</a></li>
+        <li><a href="#slide-10">What to Take Away</a></li>
+    </ul>
+    <div class="callout">
+        <div class="callout-label">Live companion and sources</div>
+        <p>This deck follows <a href="https://transformer-decoder-explained.vercel.app/training/11-data-parallelism">chapter 11, parallelism I: data</a>, where four workers hold real gradients of the trained model and a ring sums them. Numbers: <a href="https://github.com/BrendanJamesLynskey/transformer-explainer/blob/main/results.md">results.md</a> &sect;11b and &sect;13 (the site&rsquo;s training-systems model: arithmetic on an &alpha;&ndash;&beta; link model, validated against published runs in <a href="https://brendanjameslynskey.github.io/Transformer_Training_11_Model_Parallelism/#slide-08">deck 11</a>).</p>
+    </div>
+</section>
+
+<section class="slide" id="slide-01">
+    <div class="slide-number">01</div>
+    <h2>Data Parallelism</h2>
+    <p>Every worker (a GPU, or a whole machine) holds a <strong>full copy</strong> of the model and gets its own share of each batch. Each runs the forward and backward passes on its share; then the workers&rsquo; gradients are averaged and every copy takes the same optimiser step, so the copies stay identical.</p>
+    <div class="diagram-flow">
+        <div class="diagram-box">worker 1: windows 1&ndash;4 &rarr; g<sub>1</sub></div>
+        <div class="diagram-box">worker 2: windows 5&ndash;8 &rarr; g<sub>2</sub></div>
+        <div class="diagram-box">&hellip;</div>
+        <span class="diagram-arrow">&rarr;</span>
+        <div class="diagram-box accent">all-reduce: &frac14;&sum; g<sub>i</sub></div>
+        <span class="diagram-arrow">&rarr;</span>
+        <div class="diagram-box">same step everywhere</div>
+    </div>
+    <p>The average of \(W\) workers&rsquo; mean gradients over \(B/W\) windows each is exactly the mean gradient over the whole batch: data parallelism changes <em>where</em> the arithmetic happens, not what it computes. Checked on the model: four simulated workers with four windows each end the default run at 2.299304; one worker with sixteen windows at 2.299304 (the additions happen in a different order, so the last bits differ). More workers means a bigger batch per step, and the critical batch (<a href="https://brendanjameslynskey.github.io/Transformer_Training_05_Learning_Rate_and_Batch_Size/#slide-06">deck 05</a>) says how far that helps.</p>
+</section>
+
+<section class="slide" id="slide-02">
+    <div class="slide-number">02</div>
+    <h2>The Ring All-Reduce, Step by Step</h2>
+    <p>Averaging the gradients is a <em>collective</em> called an <strong>all-reduce</strong>: every worker starts with its own vector and ends with the sum. The ring cuts each vector into \(p\) chunks. In \(p-1\) <strong>reduce-scatter</strong> steps each worker passes one chunk to its neighbour, which adds it to its own; then each worker holds the finished sum of one chunk. In \(p-1\) <strong>all-gather</strong> steps the finished chunks go round until everyone has all of them.</p>
+    <div class="widget" id="ring-widget">
+        <div class="row">
+            <button id="ring-back">&#9664; back</button><button id="ring-step">step &#9654;</button><button id="ring-reset">reset</button>
+            <span class="out" id="ring-t"></span>
+        </div>
+        <svg id="ring-svg" viewBox="0 0 480 200" role="img" aria-label="Ring all-reduce among four workers"></svg>
+        <div class="cap" id="ring-cap" aria-live="polite"></div>
+    </div>
+    <script>
+    (function () {
+        const p = 4, G = [[3, 1, 4, 1], [5, 9, 2, 6], [5, 3, 5, 8], [9, 7, 9, 3]];   // worker i's gradient, one number per chunk
+        const states = [{ v: G.map(r => r.map(x => ({ x, n: 1 }))), send: [], label: 'Start: each worker holds its own gradient, cut into 4 chunks.' }];
+        let v = states[0].v.map(r => r.map(c => ({ ...c })));
+        for (let k = 0; k < p - 1; k++) {
+            const send = [];
+            const nv = v.map(r => r.map(c => ({ ...c })));
+            for (let i = 0; i < p; i++) { const c = ((i - k) % p + p) % p, j = (i + 1) % p; nv[j][c] = { x: v[j][c].x + v[i][c].x, n: v[j][c].n + v[i][c].n }; send.push([i, j, c]); }
+            v = nv; states.push({ v, send, label: 'Reduce-scatter ' + (k + 1) + '/3: each worker sends one chunk to the next and the receiver adds it.' });
+        }
+        for (let k = 0; k < p - 1; k++) {
+            const send = [];
+            const nv = v.map(r => r.map(c => ({ ...c })));
+            for (let i = 0; i < p; i++) { const c = ((i + 1 - k) % p + p) % p, j = (i + 1) % p; nv[j][c] = { ...v[i][c] }; send.push([i, j, c]); }
+            v = nv; states.push({ v, send, label: 'All-gather ' + (k + 1) + '/3: finished sums travel round the ring, copied, not added.' });
+        }
+        window.__ringFinal = v.map(r => r.map(c => c.x));
+        const svg = document.getElementById('ring-svg');
+        let t = 0;
+        function draw() {
+            const s = states[t]; let g = '';
+            for (let i = 0; i < p; i++) {
+                g += '<text class="wg-dim" x="10" y="' + (38 + i * 42) + '">worker ' + (i + 1) + '</text>';
+                for (let c = 0; c < p; c++) {
+                    const cell = s.v[i][c], hot = s.send.some(q => q[1] === i && q[2] === c), done = cell.n === p;
+                    g += '<rect x="' + (110 + c * 88) + '" y="' + (18 + i * 42) + '" width="80" height="32" rx="4" class="' + (hot ? 'wg-hot' : done ? 'wg-done' : 'wg-idle') + '"/>' +
+                        '<text class="wg-text" x="' + (150 + c * 88) + '" y="' + (39 + i * 42) + '" text-anchor="middle"' + (hot || done ? ' style="fill:var(--bg-primary)"' : '') + '>' + cell.x + (cell.n > 1 && cell.n < p ? ' (' + cell.n + ')' : '') + '</text>';
+                }
+            }
+            for (let c = 0; c < p; c++) g += '<text class="wg-dim" x="' + (150 + c * 88) + '" y="12" text-anchor="middle">chunk ' + (c + 1) + '</text>';
+            svg.innerHTML = g;
+            document.getElementById('ring-t').textContent = 'step ' + t + ' / 6';
+            document.getElementById('ring-cap').textContent = s.label + (t === 6 ? ' Every worker now holds the sums 22, 20, 20, 18.' : '');
+        }
+        document.getElementById('ring-step').onclick = () => { t = Math.min(6, t + 1); draw(); };
+        document.getElementById('ring-back').onclick = () => { t = Math.max(0, t - 1); draw(); };
+        document.getElementById('ring-reset').onclick = () => { t = 0; draw(); };
+        draw();
+    })();
+    </script>
+    <p>Orange: a chunk just received. Green: a finished sum of all four. Each worker sends \(2(p-1)/p\) of its vector, never more than twice it however many workers there are, which is the least any all-reduce can send (<a href="https://doi.org/10.1016/j.jpdc.2008.09.002">Patarasuk &amp; Yuan 2009</a>). What grows with the ring is the number of steps, \(2(p-1)\), each paying a link&rsquo;s latency.</p>
+</section>
+
+<section class="slide" id="slide-03">
+    <div class="slide-number">03</div>
+    <h2>The &alpha;&ndash;&beta; Link Model</h2>
+    <p>Sending \(n\) bytes over a link costs \(\alpha + n/B\): a fixed latency and the bytes over the bandwidth. For \(p\) ranks and a vector of \(M\) bytes:</p>
+    $$\begin{gathered} t_{\text{ring all-reduce}} = 2(p-1)\,\alpha + 2\,\tfrac{p-1}{p}\,\tfrac{M}{B} \\ t_{\text{reduce-scatter}} = t_{\text{all-gather}} = (p-1)\,\alpha + \tfrac{p-1}{p}\,\tfrac{M}{B} \\ t_{\text{tree, not pipelined}} = 2\,\lceil \log_2 p \rceil\,(\alpha + M/B) \end{gathered}$$
+    <div class="widget" id="ab-widget">
+        <div class="row">
+            <label>link <select id="ab-link"><option value="nv">NVLink (H100 server)</option><option value="net" selected>network (H100 cluster)</option><option value="wan">100 GbE WAN</option></select></label>
+            <label>GPUs p <select id="ab-p"><option>2</option><option>4</option><option>8</option><option>16</option><option selected>64</option><option>512</option></select></label>
+            <label>vector <select id="ab-m"><option value="13476298752" selected>LLaMA 7B gradient, BF16</option><option value="1000000000">1 GB</option><option value="10752">Part 1&rsquo;s gradient, BF16</option></select></label>
+        </div>
+        <div class="out" id="ab-out" style="line-height:1.8"></div>
+    </div>
+    <script>
+    (function () {
+        const LINKS = { nv: { B: 450000000000, a: 5e-06 }, net: { B: 50000000000, a: 1e-05 }, wan: { B: 12.5e9, a: 1e-05 } };
+        const t = s => s >= 1 ? s.toFixed(2) + ' s' : (s * 1e3).toFixed(s >= 1e-3 ? 1 : 3) + ' ms';
+        window.__ab = (link, p, M) => { const L = LINKS[link]; return { ar: 2 * (p - 1) * L.a + 2 * (p - 1) / p * M / L.B, rs: (p - 1) * L.a + (p - 1) / p * M / L.B, tree: 2 * Math.ceil(Math.log2(p)) * (L.a + M / L.B), wire: 2 * (p - 1) / p * M }; };
+        function upd() {
+            const link = document.getElementById('ab-link').value, p = +document.getElementById('ab-p').value, M = +document.getElementById('ab-m').value;
+            const r = window.__ab(link, p, M), L = LINKS[link];
+            document.getElementById('ab-out').innerHTML = 'B = ' + (L.B / 1e9) + ' GB/s per GPU, α = ' + (L.a * 1e6) + ' µs<br>ring all-reduce <strong>' + t(r.ar) + '</strong> (each GPU sends ' + (r.wire / 1e9).toFixed(r.wire > 1e8 ? 2 : 6) + ' GB) · reduce-scatter or all-gather ' + t(r.rs) + ' · binary tree, not pipelined ' + t(r.tree);
+        }
+        ['ab-link', 'ab-p', 'ab-m'].forEach(id => document.getElementById(id).addEventListener('change', upd));
+        upd();
+    })();
+    </script>
+    <p style="font-size:0.85rem">H100 figures as the site&rsquo;s systems model uses them: NVLink 900 GB/s total (450 each way) and 989 TFLOP/s dense BF16 from the H100 SXM datasheet; 400 Gb/s per GPU on the network (<a href="https://arxiv.org/abs/2407.21783">Llama 3, &sect;3.3.1</a>). The WAN option is a 100 GbE link (12.5 GB/s) with the network&rsquo;s latency, an illustration for <a href="https://brendanjameslynskey.github.io/Transformer_Training_12_Training_over_Slow_Links/">deck 12</a>.</p>
+</section>
+
+<section class="slide" id="slide-04">
+    <div class="slide-number">04</div>
+    <h2>Collective Times for LLaMA 7B</h2>
+    <p>LLaMA 7B&rsquo;s gradient (6,738,149,376 parameters, 13.48 GB in BF16) on H100s, by the systems model (results.md &sect;11b):</p>
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Where</th><th>Collective</th><th>Time</th><th>Bytes each GPU sends</th></tr></thead>
+            <tbody>
+                <tr><td>NVLink, 8 GPUs</td><td>ring all-reduce</td><td>52.5 ms</td><td>23.58 GB</td></tr>
+                <tr><td>NVLink, 8 GPUs</td><td>binary-tree all-reduce (not pipelined)</td><td>179.7 ms</td><td>26.95 GB</td></tr>
+                <tr><td>NVLink, 8 GPUs</td><td>reduce-scatter</td><td>26.2 ms</td><td>11.79 GB</td></tr>
+                <tr><td>NVLink, 8 GPUs</td><td>all-gather</td><td>26.2 ms</td><td>11.79 GB</td></tr>
+                <tr><td>network, 64 GPUs</td><td>ring all-reduce</td><td>531.9 ms</td><td>26.53 GB</td></tr>
+                <tr><td>network, 64 GPUs</td><td>binary-tree all-reduce (not pipelined)</td><td>3.23 s</td><td>26.95 GB</td></tr>
+                <tr><td>network, 64 GPUs</td><td>reduce-scatter</td><td>265.9 ms</td><td>13.27 GB</td></tr>
+                <tr><td>network, 64 GPUs</td><td>all-gather</td><td>265.9 ms</td><td>13.27 GB</td></tr>
+            </tbody>
+        </table>
+    </div>
+    <p>A binary tree climbs \(\log_2 p\) levels up and down, so it has fewer latency hops, but done naively (each level waiting for the whole vector) it is several times slower at this size. Real libraries pipeline both.</p>
+</section>
+
+<section class="slide" id="slide-05">
+    <div class="slide-number">05</div>
+    <h2>All-Gather, and Why Its Bytes Grow</h2>
+    <p>An <strong>all-gather</strong> is the second half of a ring all-reduce on its own: every worker contributes a piece and ends up with everyone&rsquo;s pieces. Inside an all-reduce the pieces are chunks of one sum, <em>added</em> on the way. That only works when every worker&rsquo;s vector has the same layout, as dense gradients do.</p>
+    <div class="diagram-grid cols-2">
+        <div class="diagram-panel accent-border"><h4>Same layout: all-reduce</h4><p>Bytes each worker sends: \(2\,\tfrac{p-1}{p}M\), below twice the vector however large \(p\) grows.</p></div>
+        <div class="diagram-panel accent-border"><h4>Different layouts: all-gather</h4><p>If each worker sends something different (say the 1 value in 16 it judged most important, with its position), the pieces cannot be added as they pass: each must arrive whole. Each worker sends its own piece and forwards the others: \((p-1)\) pieces, <strong>growing with the number of workers</strong>.</p></div>
+    </div>
+    <p>That is why compressing a gradient 16-fold saves far less than 16-fold on the wire once there are many workers: the central point of <a href="https://brendanjameslynskey.github.io/Transformer_Training_12_Training_over_Slow_Links/#slide-05">deck 12</a>.</p>
+</section>
+
+<section class="slide" id="slide-06">
+    <div class="slide-number">06</div>
+    <h2>Payload and Bytes on the Wire</h2>
+    <p>Two numbers describe a sync. The <strong>payload</strong> is what a worker originates: its dense gradient is 2 bytes per parameter in BF16 (<a href="https://brendanjameslynskey.github.io/Transformer_Training_08_Mixed_Precision/">deck 08</a>), so LLaMA 7B&rsquo;s is 13.5 GB. The <strong>wire</strong> bytes are what it actually sends in the collective, forwarding included:</p>
+    $$\begin{gathered}\text{all-reduce: } 2\,\tfrac{p-1}{p}\times\text{payload} \\ \text{all-gather (compressed): } (p-1)\times\text{payload}\end{gathered}$$
+    <p>Among 64 GPUs a ring all-reduce has each GPU send 26.5 GB per step. Link time follows the wire bytes, not the payload; the <a href="https://compute-in-transit-results.vercel.app">Compute in Transit results site</a> quotes both, and so does deck 12.</p>
+</section>
+
+<section class="slide" id="slide-07">
+    <div class="slide-number">07</div>
+    <h2>ZeRO and FSDP: Stop Every Worker Holding Everything</h2>
+    <p>Plain data parallelism replicates all 16 bytes per parameter on every worker (<a href="https://brendanjameslynskey.github.io/Transformer_Training_09_Memory/">deck 09</a>). ZeRO (<a href="https://arxiv.org/abs/1910.02054">Rajbhandari et al. 2020</a>) shards them across the \(d\) data-parallel workers: stage 1 the optimiser states, stage 2 the gradients too (a reduce-scatter instead of an all-reduce), stage 3 the weights themselves, all-gathered layer by layer just before use. PyTorch&rsquo;s FSDP (<a href="https://arxiv.org/abs/2304.11277">Zhao et al. 2023</a>) is stage 3.</p>
+    $$\begin{aligned}\text{stage 0: } & (2 + 2 + K)\Psi \\ \text{1: } & 4\Psi + K\Psi/d \\ \text{2: } & 2\Psi + (2 + K)\Psi/d \\ \text{3: } & (2 + 2 + K)\Psi/d\end{aligned}$$
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>GPUs d</th><th>Stage</th><th>Weights</th><th>Gradients</th><th>Optimiser</th><th>Total</th><th>Sent per step</th></tr></thead>
+            <tbody>
+                <tr><td>8</td><td>0</td><td>13.48 GB</td><td>13.48 GB</td><td>80.86 GB</td><td><strong>107.81 GB</strong></td><td>23.58 GB</td></tr>
+                <tr><td>8</td><td>1</td><td>13.48 GB</td><td>13.48 GB</td><td>10.11 GB</td><td><strong>37.06 GB</strong></td><td>23.58 GB</td></tr>
+                <tr><td>8</td><td>2</td><td>13.48 GB</td><td>1.68 GB</td><td>10.11 GB</td><td><strong>25.27 GB</strong></td><td>23.58 GB</td></tr>
+                <tr><td>8</td><td>3</td><td>1.68 GB</td><td>1.68 GB</td><td>10.11 GB</td><td><strong>13.48 GB</strong></td><td>35.38 GB</td></tr>
+                <tr><td>64</td><td>0</td><td>13.48 GB</td><td>13.48 GB</td><td>80.86 GB</td><td><strong>107.81 GB</strong></td><td>26.53 GB</td></tr>
+                <tr><td>64</td><td>1</td><td>13.48 GB</td><td>13.48 GB</td><td>1.26 GB</td><td><strong>28.22 GB</strong></td><td>26.53 GB</td></tr>
+                <tr><td>64</td><td>2</td><td>13.48 GB</td><td>0.21 GB</td><td>1.26 GB</td><td><strong>14.95 GB</strong></td><td>26.53 GB</td></tr>
+                <tr><td>64</td><td>3</td><td>0.21 GB</td><td>0.21 GB</td><td>1.26 GB</td><td><strong>1.68 GB</strong></td><td>39.80 GB</td></tr>
+            </tbody>
+        </table>
+    </div>
+    <p>LLaMA 7B, \(K = 12\) (results.md &sect;11b). Stages 1 and 2 send no more than plain data parallelism (a reduce-scatter plus an all-gather is an all-reduce cut in two); stage 3 sends half as much again, because the weights are all-gathered once more in the backward pass.</p>
+</section>
+
+<section class="slide" id="slide-08">
+    <div class="slide-number">08</div>
+    <h2>Step Time = Compute + Communication, and Overlap</h2>
+    <p>A data-parallel step costs the forward and backward compute plus the gradient sync. Nothing forces the sync to wait for the whole backward pass: the last layer&rsquo;s gradients are ready first, so frameworks send them in buckets while the backward pass works on earlier layers (PyTorch DDP, <a href="https://arxiv.org/abs/2006.15704">Li et al. 2020</a>). When the communication fits inside the remaining backward pass it costs nothing extra.</p>
+    <div class="diagram-grid cols-2">
+        <div class="diagram-panel accent-border"><h4>Nothing overlapped</h4><p>Compute 1.64 s + all-reduce 0.53 s = <strong>2.17 s</strong> per step; MFU 35.7%.</p></div>
+        <div class="diagram-panel accent-border"><h4>All-reduce hidden</h4><p><strong>1.64 s</strong> per step; MFU 47.3%, the model&rsquo;s ceiling (its fitted matrix-multiply efficiency &eta; = 0.473).</p></div>
+    </div>
+    <p>One data-parallel step of LLaMA 7B on 64 H100s with 1,048,576 tokens, by the systems model (results.md &sect;11b). Over a much slower link the communication outgrows the compute and no overlap can hide it: <a href="https://brendanjameslynskey.github.io/Transformer_Training_12_Training_over_Slow_Links/">deck 12</a>.</p>
+</section>
+
+<section class="slide" id="slide-09">
+    <div class="slide-number">09</div>
+    <h2>MFU: Model FLOPs Utilisation</h2>
+    $$\text{MFU} = \frac{D\,(6N + 12\,L\,H\,Q\,T)}{t \cdot n \cdot P}$$
+    <p>The floating-point operations the model needs per second (about \(6N\) per token for \(N\) parameters, plus attention&rsquo;s \(12LHQT\), counted from the tokens \(D\) actually processed in time \(t\)) divided by the peak \(P\) of \(n\) devices (<a href="https://arxiv.org/abs/2204.02311">Chowdhery et al. 2022</a>, PaLM, &sect;4.1 and App. B). Recomputed activations don&rsquo;t count, so MFU compares systems fairly; counting them gives <em>hardware</em> FLOPs utilisation.</p>
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Run</th><th>Utilisation</th><th>Source</th></tr></thead>
+            <tbody>
+                <tr><td>PaLM 540B, 6,144 TPU v4 chips</td><td>46.2% MFU</td><td><a href="https://arxiv.org/abs/2204.02311">Chowdhery et al. 2022</a></td></tr>
+                <tr><td>Llama 3 405B, up to 16,384 H100s</td><td>38&ndash;43% MFU (BF16)</td><td><a href="https://arxiv.org/abs/2407.21783">Grattafiori et al. 2024, &sect;3.3.2</a></td></tr>
+                <tr><td>Megatron-LM 1T GPT, 3,072 A100s</td><td>52% of peak, counting recomputation</td><td><a href="https://arxiv.org/abs/2104.04473">Narayanan et al. 2021</a></td></tr>
+                <tr><td>LLaMA 7B on 64 H100s (systems model)</td><td>35.7% waiting / 47.3% overlapped</td><td>results.md &sect;11b</td></tr>
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="slide" id="slide-10">
+    <div class="slide-number">10</div>
+    <h2>What to Take Away</h2>
+    <ul>
+        <li>Data parallelism = full copies + an <strong>all-reduce</strong> of the gradients; same maths as one big batch.</li>
+        <li>The <strong>ring</strong> sends \(2(p-1)/p\) of the vector per worker: bandwidth-optimal, latency \(2(p-1)\alpha\).</li>
+        <li>Different layouts (compressed vectors) need an <strong>all-gather</strong>, whose bytes grow with \(p\).</li>
+        <li>Count <strong>wire</strong> bytes, not payload, for link time.</li>
+        <li><strong>ZeRO / FSDP</strong> shard the 16 bytes per parameter; stage 3 costs 1.5&times; the traffic.</li>
+        <li>Overlap hides the sync behind the backward pass; MFU measures what is left.</li>
+    </ul>
+    <p class="live-link">Animated: <a href="https://transformer-decoder-explained.vercel.app/training/11-data-parallelism">chapter 11, parallelism I: data</a> &middot; next: <a href="https://brendanjameslynskey.github.io/Transformer_Training_11_Model_Parallelism/">deck 11, model parallelism</a></p>
+</section>
+
+<footer class="footer">
+    <p>Part of the <a href="https://github.com/BrendanJamesLynskey/LLM_Hub_Transformer_Training">Transformer Training series</a> &middot; live, animated companion: <a href="https://transformer-decoder-explained.vercel.app/training/11-data-parallelism">chapter 11, Parallelism I: data</a> of <a href="https://transformer-decoder-explained.vercel.app/training">Transformer Decoder Explained, Part 2</a></p>
+    <p style="margin-top: 0.5rem; font-size: 0.8rem;"><a href="https://brendanjameslynskey.github.io/Transformer_Training_09_Memory/">&larr; 09 Memory</a> &nbsp;&middot;&nbsp; <a href="https://brendanjameslynskey.github.io/LLM_Hub_Transformer_Training/">Series index</a> &nbsp;&middot;&nbsp; <a href="https://brendanjameslynskey.github.io/Transformer_Training_11_Model_Parallelism/">11 Model Parallel &rarr;</a></p>
+    <p style="margin-top: 0.5rem; font-size: 0.75rem;">Measured numbers: <a href="https://github.com/BrendanJamesLynskey/transformer-explainer/blob/main/results.md">results.md</a> (transformer-explainer @15b1c9f). Code on these slides is cut from that repository.</p>
+</footer>
+<script>
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+        anchor.addEventListener('click', function (e) {
+            e.preventDefault();
+            const target = document.querySelector(this.getAttribute('href'));
+            if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+    });
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                entry.target.style.opacity = '1';
+                entry.target.style.transform = 'translateY(0)';
+            }
+        });
+    }, { threshold: 0.1 });
+    document.querySelectorAll('.slide').forEach(slide => {
+        slide.style.opacity = '0';
+        slide.style.transform = 'translateY(30px)';
+        slide.style.transition = 'opacity 0.6s ease, transform 0.6s ease';
+        observer.observe(slide);
+    });
+</script>
+</body>
+</html>
