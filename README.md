@@ -8,9 +8,9 @@ Data parallelism; the ring all-reduce (stepped live); the α–β model and coll
 
 ## Live, animated companion
 
-This deck is the slide companion to Part 2 (Training) of [Transformer Decoder Explained](https://transformer-decoder-explained.vercel.app/training), where the same model trains in your browser:
+This deck is the slide companion to Part 2 (Training) of [Transformer Decoder Explained](https://transformer-training-explained.vercel.app/training), where the same model trains in your browser:
 
-- [Chapter 11: Parallelism I: data](https://transformer-decoder-explained.vercel.app/training/11-data-parallelism)
+- [Chapter 11: Parallelism I: data](https://transformer-training-explained.vercel.app/training/11-data-parallelism)
 
 ## Where the numbers come from
 
